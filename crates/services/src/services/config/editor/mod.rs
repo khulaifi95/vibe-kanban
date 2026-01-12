@@ -96,30 +96,49 @@ impl EditorConfig {
         CommandBuilder::new(base_command)
     }
 
+    fn command_candidates(&self) -> Vec<CommandBuilder> {
+        match self.editor_type {
+            EditorType::Zed => vec![
+                CommandBuilder::new("zed"),
+                CommandBuilder::new("zedit"),
+                CommandBuilder::new("zeditor"),
+            ],
+            _ => vec![self.get_command()],
+        }
+    }
+
     /// Resolve the editor command to an executable path and args.
     /// This is shared logic used by both check_availability() and spawn_local().
     async fn resolve_command(&self) -> Result<(std::path::PathBuf, Vec<String>), EditorOpenError> {
-        let command_builder = self.get_command();
-        let command_parts =
-            command_builder
+        let mut missing_executable = None;
+        let default_executable = self.get_command().base;
+        for command_builder in self.command_candidates() {
+            let command_parts = command_builder
                 .build_initial()
                 .map_err(|e| EditorOpenError::InvalidCommand {
                     details: e.to_string(),
                     editor_type: self.editor_type.clone(),
                 })?;
 
-        let (executable, args) = command_parts.into_resolved().await.map_err(|e| match e {
-            ExecutorError::ExecutableNotFound { program } => EditorOpenError::ExecutableNotFound {
-                executable: program,
-                editor_type: self.editor_type.clone(),
-            },
-            _ => EditorOpenError::InvalidCommand {
-                details: e.to_string(),
-                editor_type: self.editor_type.clone(),
-            },
-        })?;
+            match command_parts.into_resolved().await {
+                Ok((executable, args)) => return Ok((executable, args)),
+                Err(ExecutorError::ExecutableNotFound { program }) => {
+                    missing_executable = Some(program);
+                    continue;
+                }
+                Err(e) => {
+                    return Err(EditorOpenError::InvalidCommand {
+                        details: e.to_string(),
+                        editor_type: self.editor_type.clone(),
+                    })
+                }
+            }
+        }
 
-        Ok((executable, args))
+        Err(EditorOpenError::ExecutableNotFound {
+            executable: missing_executable.unwrap_or(default_executable),
+            editor_type: self.editor_type.clone(),
+        })
     }
 
     /// Check if the editor is available on the system.
